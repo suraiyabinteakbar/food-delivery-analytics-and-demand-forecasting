@@ -46,7 +46,28 @@ The Power BI report contains six analytical pages.
 | 6 | **Sunday Comparison** | Compares order volume across Sundays by identifying each Sunday's occurrence within its month. | Pivot table with a calculated Sunday Occurrence column |
 
 The original confidential workbook also contained a working copy of the restaurant-level page. I excluded that duplicate from this published version. More details are available in [What Was Removed](#what-was-removed-before-publishing).
+## Dashboard Preview
 
+### 1. Overview
+![Dashboard Overview](screenshots/01_overview.png)
+
+### 2. Hour Wise Analysis
+![Hour Wise Analysis](screenshots/02_hour_wise.png)
+
+### 3. Restaurant Wise Analysis
+![Restaurant Wise Analysis](screenshots/03_restaurant_wise.png)
+
+### 4. City Wise Analysis
+![City Wise Analysis](screenshots/04_city_wise.png)
+
+### 5. Account Manager Wise Analysis
+![Account Manager Wise Analysis](screenshots/05_account_manager_wise.png)
+
+### 6. Sunday Comparison
+![Sunday Comparison](screenshots/06_sunday_comparison.png)
+
+### 7. Data Model
+![Data Model](screenshots/07_data_model_relationships.png)
 ## Data Model
 
 The report uses two main tables.
