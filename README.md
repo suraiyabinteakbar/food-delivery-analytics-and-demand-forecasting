@@ -46,6 +46,7 @@ The Power BI report contains six analytical pages.
 | 6 | **Sunday Comparison** | Compares order volume across Sundays by identifying each Sunday's occurrence within its month. | Pivot table with a calculated Sunday Occurrence column |
 
 The original confidential workbook also contained a working copy of the restaurant-level page. I excluded that duplicate from this published version. More details are available in [What Was Removed](#what-was-removed-before-publishing).
+
 ## Dashboard Preview
 
 ### 1. Overview
@@ -68,6 +69,7 @@ The original confidential workbook also contained a working copy of the restaura
 
 ### 7. Data Model
 ![Data Model](screenshots/07_data_model_relationships.png)
+
 ## Data Model
 
 The report uses two main tables.
@@ -84,7 +86,7 @@ The two main tables are connected through the restaurant branch ID.
 
 ```text
 sample_orders[Restaurant Branch ID]  *  ──────  1  sample_restaurant_master[restaurant_branch_id]
-              (many)                                          (one)
+               (many)                                          (one)
 
 Cardinality: Many-to-One
 Cross-filter direction: Single
@@ -147,14 +149,20 @@ The dashboard shows what happened in the historical order data. The forecasting 
 
 The notebook is available at [`notebooks/demand_forecasting.ipynb`](notebooks/demand_forecasting.ipynb).
 
-**Forecasting tasks**
+### Dataset
+
+The forecasting notebook uses approximately 25,000 synthetic order records covering January to May 2026. The dataset includes order timestamps, restaurant information, and promotional usage data.
+
+For the hourly forecasting task, I grouped all order records by hour. The target is the total number of recorded orders across the platform in each hour, regardless of order status. It is not a forecast of completed deliveries only.
+
+### Forecasting Tasks
 
 | Track | Prediction | Granularity |
 |---|---|---|
-| **A: Citywide demand** | Total order volume across the platform | Hourly |
-| **B: Restaurant demand** | Daily order volume for each of the ten busiest restaurants | Daily |
+| **A: Platform-wide hourly demand** | Total recorded order volume across the platform | Orders per hour |
+| **B: Restaurant-level daily demand** | Daily order volume for the ten highest-volume restaurant branches, selected using training-period data only | Orders per restaurant-day |
 
-**Methodology**
+### Methodology
 
 Both forecasting tasks followed this workflow:
 
@@ -162,34 +170,56 @@ EDA → feature engineering → chronological train-test split → baseline fore
 
 The features included time-related variables, lag features, rolling averages, promotional usage, and restaurant attributes where applicable. I used a time-based split rather than a random split so that the models were trained on earlier observations and evaluated on later ones.
 
-**Two data problems found after sharing this project, and how I fixed them**
+### How the Models Are Evaluated
 
-After I shared this notebook for review, two problems were found in how I built the data, separate from the data leakage issue below.
+Both tasks use a rolling one-step-ahead setup, not a single forecast made once at the start of the test period.
 
-First, the hourly series for Track A only included hours that actually had at least one order. Hours with zero orders were missing from the table instead of being recorded as zero, which affected about 8.86% of all hours. This mattered because the `Lag_24h` feature and the baseline both depend on counting 24 rows back to land on "the same hour yesterday." With hours missing, that count drifted off the real time whenever a gap came before it.
+The lag and rolling features are built from actual past order counts across the full time series, before the split. Each test-period prediction can therefore use the actual order count from the preceding period. For example, a prediction for May 4 at 20:00 can use the actual order count for May 3 at 20:00, 24 hours earlier. Similarly, a restaurant's daily prediction can use its actual order count from the previous day.
 
-Second, for Track B, I was selecting the ten busiest restaurants and merging in restaurant details using `Restaurant Name`. The restaurant master table has 450 branches but only 328 distinct names, so 122 branches share a name with a different branch that has a different ID and a different commission rate. Two of my actual top-10 restaurants by order volume turned out to share the exact same name with each other, so grouping and merging by name was combining different restaurants together and attaching inconsistent commission values to the same rows.
+This setup is appropriate when actual order counts become available before each new prediction is made. It is different from forecasting an entire future month using only information available on the first day of that month.
 
-I fixed both: the hourly series now includes every hour in the date range with zero-order hours filled in explicitly, and Track B selects and merges restaurants using `Restaurant Branch ID`, the actual unique key, instead of the name. I reran both tracks from the baseline onward after the fix.
+### Data Preparation and Evaluation Checks
 
-**Model results (after the fix)**
+Several checks were important for making the forecasting comparisons consistent:
 
-| Track | Baseline MAE | Random Forest MAE | Gradient Boosting MAE |
-|---|---:|---:|---:|
-| A: Citywide hourly | 2.53 | 2.08 | **1.88** |
-| B: Top-10 restaurant daily | 0.73 | **0.61** | 0.62 |
+1. **Complete hourly timeline:** Included hours with zero orders so that `Lag_24h` consistently refers to the same hour on the previous day.
+2. **Restaurant identification:** Used `Restaurant Branch ID` rather than restaurant names for grouping and merging, since different branches can share the same name.
+3. **Lag and rolling features:** Calculated lag features and rolling averages before removing rows with insufficient historical data.
+4. **Training-period selection:** Selected the ten highest-volume restaurant branches using training-period data only and applied the same cutoff date to restaurant selection and model evaluation.
+5. **Promotional features:** Used the previous day's promotional usage rate to avoid including information from the prediction day.
+6. **Consistent evaluation:** Verified that Random Forest and Gradient Boosting were evaluated on identical restaurant-level test observations, dates, branch IDs, and target values.
 
-Compared with their respective baselines, the best-performing model reduced prediction error by about 26% for citywide hourly demand and about 16% for restaurant-level daily demand. These numbers are lower than what I had before the fix (roughly 59% and 43%). The earlier baselines were themselves distorted by the same two problems, which overstated how much better the models looked. The numbers here are more modest, but I trust them more.
+### Model Results
 
-**Notable findings**
+| Forecasting task | Baseline MAE | Best ML MAE | Result |
+|---|---:|---:|---|
+| Platform-wide hourly | 2.53 | 1.88 (Gradient Boosting) | 26% improvement |
+| Restaurant-level daily | 0.54 | 0.53 (Gradient Boosting) | 1.2% improvement |
 
-- Feature importance changed after the fix. For citywide hourly forecasting, `Lag_24h` (same hour, the day before) is now the strongest predictor, ahead of `Hour` itself, which makes sense once the lag feature is actually pointing at the right hour. For restaurant-level daily forecasting, `commission_pct` and `Rolling_7day_avg` are now the two strongest features, with `PromoUsageRate_Lag1` much lower than it was before the fix.
-- During model development, separately from the two issues above, I found a data leakage issue in the promotional usage feature. An earlier version used same-day promotional information, which would not have been available when making a real forecast. I corrected this by using the previous day's promotional usage rate instead and retrained the model. This fix is already included in the numbers above.
-- Error analysis on the corrected data still shows Track A's two largest errors on May 21 and May 22. I checked the synthetic data generation logic for anything tied to those dates and found nothing deliberate, so this is most likely random variation rather than a real event. Track B's largest errors, after the fix, are spread across different dates instead of clustering on May 21–22 the way they appeared to before the restaurant merge was corrected, so I'm not treating that as a finding anymore.
+For platform-wide hourly forecasting, Gradient Boosting reduced MAE by approximately 26% compared with the baseline. Random Forest also performed better than the baseline, but Gradient Boosting achieved the lowest error.
 
-**Limitations**
+For restaurant-level daily forecasting, Gradient Boosting reduced MAE by approximately 1.2%, while Random Forest performed approximately 1.5% worse than the baseline. Both models were evaluated on the same 300 restaurant-day observations, covering the same restaurants and test period.
 
-The models were evaluated on a held-out period from the same synthetic dataset, not on an independent real-world dataset. They do not account for external factors such as holidays, weather, or other unexpected events. They estimate expected order volume from historical patterns but do not measure the causal effect of promotions or other business decisions.
+The restaurant-level results are close to the baseline. Given the small difference and the limited dataset, I would not interpret this as evidence of a reliable improvement.
+
+### Notable Findings
+
+- For Track A, Random Forest identified `Lag_24h` as its most important feature, followed by `Hour`. This suggests that the previous day's demand at the same hour was particularly informative for estimating hourly order volume.
+- For Track B, the strongest Random Forest features were `commission_pct`, `Rolling_7day_avg`, and `Weekday`. Since the model performed similarly to the baseline, these feature rankings should be interpreted cautiously.
+- Random Forest's two largest hourly prediction errors occurred on May 21 and May 22. I examined the data generation logic and found no specific events associated with those dates, so the errors may reflect random variation.
+- Track B's largest errors occurred on different dates, including May 23 and May 11, rather than showing a similar pattern across both forecasting tasks.
+
+Feature importance and error analysis are based on Random Forest. Although Gradient Boosting achieved the best hourly forecasting result, these two analyses were not performed on that model.
+
+### Limitations
+
+The forecasting models use synthetic data rather than actual company order records, so the results should not be treated as evidence of real-world forecasting performance.
+
+The models were evaluated using a rolling one-step-ahead setup on a held-out period from the same synthetic dataset, not on an independent real-world dataset or a true multi-period-ahead forecast. The test period was also inspected during iterative data-quality corrections and model comparisons, so it should be treated as an exploratory temporal holdout rather than an untouched final benchmark.
+
+The models do not account for external factors such as holidays, weather, or unexpected changes in customer behavior. They estimate expected order volume based on historical patterns but do not measure the causal effect of promotional campaigns or other business decisions.
+
+For restaurant-level daily forecasting, the evaluation covers ten restaurant branches over approximately five months of data. This may not be enough to establish a reliable advantage over a simple baseline. A larger number of restaurants, a longer time period, and additional external features would be useful next steps.
 
 ## Interactive Features
 
@@ -222,9 +252,9 @@ The report includes several interactive elements:
 - Turning an operational question about Sunday demand into a calculated column and an interactive report page.
 - Applying data privacy practices when preparing a project for public release.
 - Extending descriptive analytics into predictive analytics through feature engineering, chronological train-test splitting, baseline comparison, and MAE evaluation.
-- Identifying and correcting data leakage during model development.
-- Finding and fixing two separate data-construction problems after external review (missing zero-order hours, and a restaurant merge that matched on name instead of ID), and recomputing the results honestly instead of keeping the earlier, more favorable numbers.
-- Examining model errors and distinguishing patterns in the results from random variation.
+- Identifying and preventing data leakage in forecasting features.
+- Comparing machine learning models against simple forecasting baselines.
+- Examining prediction errors and interpreting feature importance.
 - Adjusting the forecasting scope based on data sparsity. Approximately 97.74% of possible restaurant-hour combinations had zero orders, which made restaurant-level hourly forecasting unsuitable for this dataset.
 
 ## Key Insights
@@ -271,7 +301,7 @@ The original production dashboard and its real business data are not included in
 ## Repository Structure
 
 ```text
-food-delivery-hourly-demand-analytics/
+food-delivery-analytics-and-demand-forecasting/
 ├── README.md
 ├── .gitignore
 ├── data_generator_script.py
